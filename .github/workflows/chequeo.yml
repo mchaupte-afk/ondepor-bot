@@ -1,0 +1,67 @@
+name: Chequeo canchas
+
+on:
+  # Cada 5 minutos entre las 7:00 y las 22:59 de Argentina (el cron de GitHub está en UTC).
+  schedule:
+    - cron: "*/5 10-23,0-1 * * *"
+  # Permite correrlo a mano (botón "Run workflow") o desde cron-job.org.
+  workflow_dispatch:
+    inputs:
+      forzar_mail:
+        description: "Mandar mail con todo lo libre (prueba)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: chequeo
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  chequeo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      TZ: America/Argentina/Buenos_Aires
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Recuperar estado anterior
+        uses: actions/cache/restore@v4
+        with:
+          path: estado
+          key: estado-${{ github.run_id }}
+          restore-keys: estado-
+
+      - name: Chequear OnDepor
+        run: python bot_cloud.py
+        env:
+          ONDEPOR_EMAIL: ${{ secrets.ONDEPOR_EMAIL }}
+          ONDEPOR_PASSWORD: ${{ secrets.ONDEPOR_PASSWORD }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          FORZAR_MAIL: ${{ inputs.forzar_mail }}
+          SEDE: ${{ vars.SEDE }}
+          HORAS_MIN: ${{ vars.HORAS_MIN }}
+          HORAS_MAX: ${{ vars.HORAS_MAX }}
+          HORA_INICIO_ACTIVO: ${{ vars.HORA_INICIO_ACTIVO }}
+          HORA_FIN_ACTIVO: ${{ vars.HORA_FIN_ACTIVO }}
+          CANCHAS: ${{ vars.CANCHAS }}
+
+      - name: Guardar estado
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: estado
+          key: estado-${{ github.run_id }}-${{ github.run_attempt }}
