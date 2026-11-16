@@ -157,7 +157,8 @@ def iniciar_sesion(page):
     log("Iniciando sesión en OnDepor…")
     page.goto(LOGIN_URL, wait_until="domcontentloaded")
     page.wait_for_selector("input[type=password]", timeout=20000)
-    page.locator("input[type=email]").first.fill(os.environ["ONDEPOR_EMAIL"])
+    page.wait_for_timeout(1500)
+    page.locator("input[type=email]").first.fill(os.environ["ONDEPOR_EMAIL"].strip())
     page.locator("input[type=password]").first.fill(os.environ["ONDEPOR_PASSWORD"])
     recordar = page.locator("input[type=checkbox]").first
     if recordar.count() and not recordar.is_checked():
@@ -165,16 +166,29 @@ def iniciar_sesion(page):
             recordar.check(timeout=3000)
         except Exception:
             pass
-    page.locator("input[type=password]").first.press("Enter")
+    page.wait_for_timeout(1000)
+    boton = page.get_by_role("button", name=re.compile(r"Iniciar sesi", re.I)).first
+    if boton.count():
+        boton.click()
+    else:
+        page.locator("input[type=password]").first.press("Enter")
     limite = time.time() + 30
     while time.time() < limite:
         page.wait_for_timeout(1000)
-        if "/app/login" not in page.url and "ondepor.com" in page.url:
+        if "/app/login" not in page.url:
             break
+    if "/app/login" in page.url:
+        # Registrar el mensaje que muestra OnDepor (sin datos personales)
+        texto = page.evaluate("""() => [...document.querySelectorAll(
+            '[role=alert],.alert,.error,.invalid-feedback,.toast,.snackbar,.mat-error,.text-danger,[class*=error],[class*=Error]')]
+            .map(e => e.innerText.trim()).filter(Boolean).join(' | ')""")
+        email = os.environ["ONDEPOR_EMAIL"].strip()
+        texto = (texto or "sin mensaje visible").replace(email, "<email>")[:300]
+        raise LoginFallido(f"Sigue en la página de login. Mensaje de OnDepor: {texto}")
     page.goto(FAV_URL, wait_until="domcontentloaded")
     page.wait_for_timeout(2500)
     if "_favorites" not in page.url:
-        raise LoginFallido(page.url.split("?")[0])
+        raise LoginFallido(f"Después del login terminó en {page.url.split('?')[0]}")
     log("Sesión iniciada.")
 
 
@@ -251,6 +265,11 @@ def main():
         return 0
 
     estado = cargar_estado()
+    if estado.get("login_fallido") and not forzar:
+        espera = datetime.fromisoformat(estado["login_fallido"]) + timedelta(hours=3)
+        if ahora < espera:
+            log(f"Último login falló; no reintento hasta las {espera:%H:%M}.")
+            return 0
     with sync_playwright() as p:
         browser = p.chromium.launch(channel=env("CANAL", "chrome"), headless=True)
         ctx = browser.new_context(storage_state=cargar_sesion(), locale="es-AR",
@@ -260,16 +279,17 @@ def main():
         try:
             turnos = filtrar(leer_grilla(page, int(HORAS_MAX // 24) + 2), ahora)
             guardar_sesion(ctx)
-        except LoginFallido:
-            log("No se pudo iniciar sesión (¿contraseña incorrecta o captcha?).")
+        except LoginFallido as e:
+            log(f"No se pudo iniciar sesión: {e}")
+            estado["login_fallido"] = ahora.isoformat(timespec="seconds")
             if not estado.get("aviso_login"):
                 enviar_mail("[Bot OnDepor] No pude iniciar sesión en OnDepor",
                             "<p>El bot intentó loguearse y OnDepor no lo dejó entrar.</p>"
-                            "<p>Revisá ONDEPOR_EMAIL / ONDEPOR_PASSWORD en los Secrets del repositorio. "
-                            "Si están bien, puede que OnDepor bloquee logins automáticos desde servidores.</p>")
+                            f"<p>Detalle: {e}</p>"
+                            "<p>Para no bloquearte la cuenta, no vuelve a intentar por 3 horas.</p>")
                 estado["aviso_login"] = True
-                guardar_estado(estado)
-            return 1
+            guardar_estado(estado)
+            return 0
         finally:
             browser.close()
 
